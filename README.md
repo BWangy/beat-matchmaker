@@ -65,7 +65,6 @@ Eliminates manual audio collection by autonomously generating a localized datase
 
 - **Multi-Genre Live Trends:** Queries the Deezer API to fetch currently trending artists across Hip-Hop, Electronic, R&B, and Pop charts.
 - **Historical Seeds:** Reads `data/seed_artists.txt` to ensure legendary and foundational producers are included in the dataset.
-- **Smart Scraping:** Uses `yt-dlp` to download official audio. Includes bot-evasion techniques (client spoofing, sleep timers) and seamlessly ignores age-restricted tracks to prevent pipeline crashes.
 - **Fault Tolerance:** Saves profile math incrementally after _every_ successful artist. Features an idempotency checkpoint to automatically skip previously processed artists on subsequent runs.
 
 ### 2. GPU-Accelerated Stem Separation (Demucs)
@@ -73,7 +72,7 @@ Eliminates manual audio collection by autonomously generating a localized datase
 To prevent human vocals from distorting the acoustic math, the backend utilizes **Meta's htdemucs neural network** via PyTorch:
 
 - Runs as a `subprocess` to ensure GPU VRAM is completely flushed between tracks.
-- Extracts the `no_vocals.wav` (instrumental) track, ensuring the mathematical fingerprint is based strictly on kicks, snares, 808s, and synths.
+- Extracts the `no_vocals.wav` (instrumental) track, ensuring the mathematical fingerprint is based strictly on kicks, snares, 808s, and instruments.
 - Triggers an immediate, aggressive server cleanup (`os.remove()`, `shutil.rmtree()`) to wipe massive uncompressed WAV files and copyrighted MP3s post-analysis.
 
 ### 3. Digital Signal Processing (`processor.py`)
