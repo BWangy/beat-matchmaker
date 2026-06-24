@@ -1,30 +1,30 @@
 # Beat Matchmaker
 
-An automated, full-stack machine learning application that analyzes user-uploaded music beats and matches them against the mathematical sonic fingerprints of trending commercial artists.
+An automated, full-stack machine learning application that analyzes user-uploaded music beats and matches them against the mathematical sonic fingerprints of trending and historical commercial artists.
 
-By extracting detailed acoustic features using digital signal processing (DSP) and indexing them via Facebook AI Similarity Search (FAISS), the platform allows music producers to instantaneously find which mainstream artists best fit their production style.
+By isolating instrumentals using Meta's **Demucs AI** (GPU-accelerated), extracting acoustic features via digital signal processing (**librosa**), and indexing them via Facebook AI Similarity Search (**FAISS**), the platform allows music producers to instantaneously find which mainstream artists best fit their production style.
 
 ---
 
 ## Project Architecture
 
-The application is split into a modern web frontend and a high-performance machine learning backend pipeline.
+The application is split into a modern web frontend and a high-performance machine learning backend pipeline heavily optimized for audio processing.
 
 ```text
-┌────────────────────────────────────────────────────────────────────────┐
-│                          1. DATA INGESTION                             │
-│  Deezer API (Trending Artists) ──> YouTube Search (yt-dlp Scraper)     │
-└────────────────────────────────────┬───────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          1. DATA INGESTION                              │
+│  Deezer API (Multi-Genre) + Local Seed List ──> yt-dlp (YouTube Audio)  │
+└────────────────────────────────────┬────────────────────────────────────┘
                                      ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        2. DSP & INDEXING ENGINE                        │
-│  Raw Audio (.mp3) ──> Librosa Feature Extraction ──> FAISS Index (.bin)│
-└────────────────────────────────────┬───────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        2. AI & DSP PROCESSING                           │
+│  Raw MP3 ──> Demucs (GPU Stem Separation) ──> Librosa ──> FAISS Index   │
+└────────────────────────────────────┬────────────────────────────────────┘
                                      ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                          3. APPLICATION FLOW                           │
-│  React Frontend (Drop Beat) ──> FastAPI Gateway ──> Vector Match Vector│
-└────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          3. APPLICATION FLOW                            │
+│  React Frontend (Drop Beat) ──> FastAPI Gateway ──> Vector Match Search │
+└─────────────────────────────────────────────────────────────────────────┘
 
 ```
 
@@ -36,21 +36,21 @@ The application is split into a modern web frontend and a high-performance machi
 ├── backend/                  # FastAPI & Machine Learning Pipeline
 │   ├── data/
 │   │   ├── artist_profiles.json  # Aggregated 19-dimensional artist features
+│   │   ├── seed_artists.txt      # Static list of historical/classic artists
 │   │   ├── faiss_index.bin       # Compiled binary vector search index
-│   │   └── temp_audio/           # Ephemeral storage for scraper processing
+│   │   └── temp_audio/           # Ephemeral storage for scraper & Demucs
 │   ├── src/
-│   │   ├── auto_builder.py       # Automated data pipeline & Deezer/YT scraper
+│   │   ├── auto_builder.py       # Scraper, Demucs controller & pipeline runner
 │   │   ├── indexer.py            # FAISS matrix compilation & normalization
 │   │   ├── processor.py          # Librosa acoustic feature extraction layer
+|   |   ├── matcher.py            # Loads FAISS index and executes nearest-neighbor search
 │   │   └── main.py               # FastAPI application gateway
 │   └── requirements.txt      # Python dependencies
 │
 ├── frontend/                 # Client Web Interface
-│   ├── public/               # Static assets
 │   ├── src/
 │   │   ├── components/       # UI elements (Drag & Drop, Artist Cards)
-│   │   ├── App.jsx           # Main application view
-│   │   └── index.css         # Global styling
+│   │   └── App.jsx           # Main application view
 │   └── package.json          # Node.js dependencies
 
 ```
@@ -59,39 +59,38 @@ The application is split into a modern web frontend and a high-performance machi
 
 ## Core Components
 
-### 1. Data Gathering & Automation (`backend/src/auto_builder.py`)
+### 1. Hybrid Data Gathering (`auto_builder.py`)
 
-Eliminates manual audio collection by autonomously generating a localized dataset:
+Eliminates manual audio collection by autonomously generating a localized dataset using a dual-strategy approach:
 
-- Queries the **Deezer API** using pagination parameters to fetch the top 100 globally trending artists without requiring complex OAuth workflows.
-- Utilizes **`yt-dlp`** to parse YouTube search results for official high-quality audio streams.
-- Restricts processing overhead by applying a metadata `match_filter` that instantly rejects video files longer than **8 minutes**.
-- Downloads 3 tracks per artist, processes them into acoustic vectors, and calculates an unweighted average (`np.mean`) to establish a single baseline archetypal profile for that artist.
-- Automatically executes an immediate disk cleanup (`os.remove()`) to wipe raw audio files post-analysis to handle server storage constraints.
+- **Multi-Genre Live Trends:** Queries the Deezer API to fetch currently trending artists across Hip-Hop, Electronic, R&B, and Pop charts.
+- **Historical Seeds:** Reads `data/seed_artists.txt` to ensure legendary and foundational producers are included in the dataset.
+- **Smart Scraping:** Uses `yt-dlp` to download official audio. Includes bot-evasion techniques (client spoofing, sleep timers) and seamlessly ignores age-restricted tracks to prevent pipeline crashes.
+- **Fault Tolerance:** Saves profile math incrementally after _every_ successful artist. Features an idempotency checkpoint to automatically skip previously processed artists on subsequent runs.
 
-### 2. Digital Signal Processing (`backend/src/processor.py`)
+### 2. GPU-Accelerated Stem Separation (Demucs)
 
-Parses raw audio files (`.mp3`, `.wav`, etc.) into a **19-dimensional feature vector**:
+To prevent human vocals from distorting the acoustic math, the backend utilizes **Meta's htdemucs neural network** via PyTorch:
+
+- Runs as a `subprocess` to ensure GPU VRAM is completely flushed between tracks.
+- Extracts the `no_vocals.wav` (instrumental) track, ensuring the mathematical fingerprint is based strictly on kicks, snares, 808s, and synths.
+- Triggers an immediate, aggressive server cleanup (`os.remove()`, `shutil.rmtree()`) to wipe massive uncompressed WAV files and copyrighted MP3s post-analysis.
+
+### 3. Digital Signal Processing (`processor.py`)
+
+Parses the isolated instrumental files into a **19-dimensional feature vector** using `librosa`:
 
 - **Temporal Features:** Beats Per Minute (BPM) and onset strength.
 - **Spectral Features:** Spectral Centroid (perceived brightness) and Spectral Flatness (tonality vs. noise).
-- **Timbral Features:** 13 Mel-Frequency Cepstral Coefficients (MFCCs) tracking instrumentation textures and sonic characteristics.
+- **Timbral Features:** 13 Mel-Frequency Cepstral Coefficients (MFCCs) tracking instrumentation textures.
 
-### 3. Vector Index Engine (`backend/src/indexer.py`)
+### 4. Vector Index Engine (`indexer.py`)
 
-Compiles the structural JSON profiles into an optimized search space:
+Compiles the structural JSON profiles into an optimized FAISS `IndexFlatL2` matrix for microsecond-level Euclidean distance matching, serialized to disk as `faiss_index.bin`.
 
-- Formats standard Python structures into strict 2D NumPy matrices (`float32`).
-- Normalizes varied metric scales so high-magnitude variables (like a 140 BPM tempo) do not mathematically eclipse fractional variables (like a 0.03 spectral flatness rating).
-- Loads data points into a FAISS `IndexFlatL2` matrix for microsecond-level Euclidean distance matching, serializing it to disk as `faiss_index.bin`.
+### 4. Vector Query Engine (`matcher.py`)
 
-### 4. Client Web Application (`frontend/`)
-
-A responsive user interface built for fast, single-page interactions:
-
-- Features a custom drag-and-drop file boundary enabling producers to drop local production stems directly into the viewport.
-- Communicates multi-part form requests directly to the FastAPI upload gateway.
-- Renders ranked similarity scores alongside matched artist profiles seamlessly using dynamic cards.
+Acts as the search interface between the incoming user API request and the compiled matrix. It loads `faiss_index.bin` into memory, normalizes the 19-dimensional user vector, and executes a real-time nearest-neighbor search to return the top artist matches alongside calculated confidence scores.
 
 ---
 
@@ -101,7 +100,8 @@ A responsive user interface built for fast, single-page interactions:
 
 - **Python 3.10+**
 - **Node.js (v18+)**
-- **FFmpeg** (Required on your system path for `yt-dlp` audio conversions)
+- **FFmpeg** (Required on your system path for audio conversions)
+- **NVIDIA GPU** (Required for practical Demucs processing times)
 
 ### Backend Configuration
 
@@ -110,32 +110,41 @@ A responsive user interface built for fast, single-page interactions:
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+.\venv\Scripts\activate  # On Mac/Linux: source venv/bin/activate
 
 ```
 
-2. Install dependencies:
+2. Install standard dependencies:
 
 ```bash
 pip install -r requirements.txt
 
 ```
 
-3. Run the automated data population pipeline (grabs trending artists and downloads profiles):
+3. **Install CUDA-enabled PyTorch and Demucs:**
 
 ```bash
-python src/auto_builder.py
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install demucs
 
 ```
 
-4. Compile the vector index matrix:
+4. Populate your historical seed list in `data/seed_artists.txt`.
+5. Run the automated data population pipeline _(Note: The first run will pause briefly to download the `htdemucs` model weights)_:
 
 ```bash
-python src/indexer.py
+python -m src.auto_builder
 
 ```
 
-5. Spin up the development server:
+6. Compile the vector index matrix:
+
+```bash
+python -m src.indexer
+
+```
+
+7. Spin up the FastAPI development server:
 
 ```bash
 uvicorn src.main:app --reload
@@ -148,26 +157,7 @@ uvicorn src.main:app --reload
 
 ```bash
 cd frontend
-
-```
-
-2. Install the node packages:
-
-```bash
 npm install
-
-```
-
-3. Launch the web interface client:
-
-```bash
 npm run dev
 
 ```
-
----
-
-## Deployment & Production Notes
-
-- **Audio Storage Lifecycle:** Ensure that the user-uploaded file paths on the FastAPI backend follow the same strict file-deletion workflow implemented in the `auto_builder` to prevent server disk saturation.
-- **Index Rebuilding:** The `faiss_index.bin` file is static once built. To keep the app fresh with current music trends, set up a recurring cron job to run `auto_builder.py` and `indexer.py` weekly to absorb new trending charts.
